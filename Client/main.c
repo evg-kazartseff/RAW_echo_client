@@ -126,9 +126,9 @@ int main(int argc, char** argv) {
         printf("error");
     }
     printf("Send: ");
-    printf("%s", udp_packet + sizeof(struct udphdr));
+    printf("%s", packet + size_ip_header + size_udp_header);
     printf("\n");
-    free(udp_packet);
+    free(packet);
 
     ssize_t bytes_read;
     socklen_t socklen;
