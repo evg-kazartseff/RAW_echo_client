@@ -5,36 +5,37 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/udp.h>
+#include <netinet/ip.h>
 #include <string.h>
 #include <arpa/inet.h>
 #include <zconf.h>
 #include <stdlib.h>
 
-struct ip_header {
-#if BYTE_ORDER == LITTLE_ENDIAN
-    u_int ip_hl:4, ip_v:4;
-#endif
-#if BYTE_ORDER == BIG_ENDIAN
-    u_int ip_v:4, /* version */
-	ip_hl:4; /* header length */
-#endif
-    u_char ip_tos;
-    u_short ip_len;
-    u_short ip_id;
-    u_short ip_off;
-    u_char ip_ttl;
-    u_char ip_p;
-    u_short ip_sum;
-    struct in_addr ip_src;
-    struct in_addr ip_dst;
-};
 
-struct udp_header {
-    u_short src;
-    u_short dst;
-    u_short len;
-    u_short check;
-};
+unsigned short csum(char* ptr, size_t nbytes) {
+    long sum;
+    unsigned short oddbyte;
+    unsigned short answer;
+
+    sum = 0;
+    while (nbytes > 1) {
+        sum += *ptr++;
+        nbytes -= 1;
+    }
+    if (nbytes == 1) {
+        oddbyte = 0;
+        *((u_char*) &oddbyte) = *(u_char*) ptr;
+        sum += oddbyte;
+    }
+
+    sum = (sum >> 16) + (sum & 0xffff);
+    sum = sum + (sum >> 16);
+    answer = (unsigned short) ~sum;
+
+    return (answer);
+}
+
 
 int main(int argc, char** argv) {
     if (argc != 3) {
@@ -46,6 +47,9 @@ int main(int argc, char** argv) {
         perror("Error: Con't create socket");
         return 1;
     }
+    int on = 1;
+    setsockopt(sock, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on));
+
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(struct sockaddr_in));
     addr.sin_family = AF_INET;
@@ -70,29 +74,61 @@ int main(int argc, char** argv) {
     addr.sin_port = htons((uint16_t) port);
 
     uint16_t my_port = 5456;
+    char* ip = "192.168.0.106";
+    in_addr_t my_ip;
+    if ((my_ip = inet_addr(ip)) == 0) {
+        perror("Error: Can't fill ip address");
+        close(sock);
+        return 1;
+    };
 
     size_t data_len = 11;
     char data[data_len];
     memcpy(data, "Hello world", data_len);
 
-    size_t size_udp_header = sizeof(struct udp_header);
-    size_t size_udp_packet = sizeof(struct udp_header) + data_len;
+    size_t size_udp_header = sizeof(struct udphdr);
+    size_t size_udp_packet = size_udp_header + data_len;
+    size_t size_ip_header = sizeof(struct iphdr);
+    size_t size_packet = size_ip_header + size_udp_packet;
 
-    char* buff = malloc(size_udp_packet * sizeof(char));
-    memset(buff, 0, size_udp_packet);
-    struct udp_header* udp = (struct udp_header*) buff;
-    udp->src = htons(my_port);
-    udp->dst = htons((uint16_t) port);
+
+    char* udp_packet = malloc(size_udp_packet * sizeof(char));
+    memset(udp_packet, 0, size_udp_packet);
+    struct udphdr* udp = (struct udphdr*) udp_packet;
+    udp->source = htons(my_port);
+    udp->dest = htons((uint16_t) port);
     udp->len = htons((uint16_t) size_udp_packet);
     udp->check = 0;
-    memcpy(buff +  sizeof(struct udp_header), data, data_len);
-    if (sendto(sock, buff, size_udp_packet, 0, (struct sockaddr*) &addr, sizeof(struct sockaddr_in)) < 0) {
+    memcpy(udp_packet +  sizeof(struct udphdr), data, data_len);
+
+
+
+    char* packet = malloc(size_packet * sizeof(char));
+    struct iphdr* ip_header = (struct iphdr*) packet;
+    ip_header->version = 4;
+    ip_header->ihl = 5;
+    ip_header->tos = 0;
+    ip_header->tot_len = htons((uint16_t) size_packet);
+    ip_header->id = 0;
+    ip_header->frag_off = 64;
+    ip_header->ttl = 64;
+    ip_header->protocol = IPPROTO_UDP;
+    ip_header->check = 0;
+    ip_header->daddr =  ip_addr.s_addr;
+    ip_header->saddr = my_ip;
+
+    memcpy(packet + size_ip_header, udp_packet, size_udp_packet);
+    free(udp_packet);
+
+    ip_header->check = (uint16_t) csum(packet, size_packet);
+
+    if (sendto(sock, packet, size_packet, 0, (struct sockaddr*) &addr, sizeof(struct sockaddr_in)) < 0) {
         printf("error");
     }
     printf("Send: ");
-    printf("%s", buff + sizeof(struct udp_header));
+    printf("%s", udp_packet + sizeof(struct udphdr));
     printf("\n");
-    free(buff);
+    free(udp_packet);
 
     ssize_t bytes_read;
     socklen_t socklen;
@@ -106,9 +142,9 @@ int main(int argc, char** argv) {
             close(sock);
             flg = 0;
         }
-        struct udp_header* udph = (struct udp_header* ) (RecvBuff + sizeof(struct ip_header));
-        if (ntohs(udph->dst) == my_port) {
-            payload = (RecvBuff + sizeof(struct ip_header) + sizeof(struct udp_header));
+        struct udphdr* udph = (struct udphdr* ) (RecvBuff + sizeof(struct iphdr));
+        if (ntohs(udph->dest) == my_port) {
+            payload = (RecvBuff + sizeof(struct iphdr) + sizeof(struct udphdr));
             printf("Recv: ");
             printf("%s", payload);
             printf("\n");
