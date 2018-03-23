@@ -43,7 +43,7 @@ int main(int argc, char** argv) {
         return 1;
     };
     addr.sin_addr = ip_addr;
-    long port = 1354;//strtol(argv[2], NULL, 10);
+    long port = strtol(argv[2], NULL, 10);
     if (port < 0) {
         perror("Error: Port can't be negative");
         close(sd_listener);
